@@ -12,22 +12,38 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Buscar el mod (descomprime el .zip o .rar)
+      # Usa el último .zip (o .rar/.7z) completo que se subió y, encima, los de cambios que se subieron después
+      # (por ejemplo cambios-v18.zip): así no hace falta volver a subir el mod entero en cada versión.
+      - name: Buscar el mod (descomprime el .zip o .rar, y los de cambios encima)
         run: |
           shopt -s nullglob nocaseglob
-          ARCHIVO=""; ULTIMO=0
+          LISTA=()
           for f in *.zip *.rar *.7z; do
             t=$(git log -1 --format=%ct -- "$f")
-            if [ -n "$t" ] && [ "$t" -ge "$ULTIMO" ]; then ULTIMO=$t; ARCHIVO="$f"; fi
+            if [ -n "$t" ]; then LISTA+=("$t|$f"); fi
           done
           BASE="$GITHUB_WORKSPACE"
-          if [ -n "$ARCHIVO" ]; then
-            echo "Uso el archivo: $ARCHIVO"
+          if [ ${#LISTA[@]} -gt 0 ]; then
             BASE="$GITHUB_WORKSPACE/_mod"; rm -rf "$BASE"; mkdir -p "$BASE"
-            case "${ARCHIVO,,}" in
-              *.zip) unzip -q -o "$ARCHIVO" -d "$BASE" ;;
-              *) sudo apt-get update -qq && sudo apt-get install -y -qq unar && unar -q -f -o "$BASE" "$ARCHIVO" ;;
-            esac
+            mapfile -t ORDEN < <(printf '%s\n' "${LISTA[@]}" | sort -t'|' -k1,1n -k2,2 | cut -d'|' -f2-)
+            # el más nuevo que trae el mod entero (tiene gradlew) es la base
+            DESDE=0
+            for i in "${!ORDEN[@]}"; do
+              f="${ORDEN[$i]}"
+              case "${f,,}" in
+                *.zip) if unzip -Z1 "$f" | grep -E '(^|/)gradlew$' >/dev/null; then DESDE=$i; fi ;;
+                *) DESDE=$i ;;
+              esac
+            done
+            for ((i=DESDE; i<${#ORDEN[@]}; i++)); do
+              f="${ORDEN[$i]}"
+              echo "Uso el archivo: $f"
+              case "${f,,}" in
+                *.zip) unzip -q -o "$f" -d "$BASE" ;;
+                *) if ! command -v unar >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq unar; fi
+                   unar -q -f -o "$BASE" "$f" ;;
+              esac
+            done
           fi
           GRADLEW=$(find "$BASE" -name gradlew -type f -not -path '*/.git/*' | awk '{ print length, $0 }' | sort -n | head -n 1 | cut -d' ' -f2-)
           if [ -z "$GRADLEW" ]; then echo "::warning::Sube el archivo locomotora-mod.zip al repositorio."; exit 0; fi
@@ -53,3 +69,4 @@ jobs:
           name: locomotora-mod
           path: ${{ env.PROYECTO }}/build/libs/*.jar
           if-no-files-found: error
+
